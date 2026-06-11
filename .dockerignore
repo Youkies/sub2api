@@ -10,9 +10,10 @@
 # Documentation
 *.md
 !deploy/DOCKER.md
-docs/*
-!docs/legal/
-!docs/legal/*.md
+docs/**
+!docs
+!docs/legal
+!docs/legal/**
 
 # IDE
 .idea/
