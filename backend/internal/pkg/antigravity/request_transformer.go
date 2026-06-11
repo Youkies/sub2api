@@ -85,10 +85,14 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 	// 用于存储 tool_use id -> name 映射
 	toolIDToName := make(map[string]string)
 
+	// 剥离 mappedModel 中的 thinking 预算后缀（如 claude-opus-4-6-thinking(0)）。
+	// 后缀只用于控制 generationConfig，不发给上游。
+	mappedModelBase, mappedModelBudget, mappedModelHasSuffix := ParseThinkingBudgetSuffix(mappedModel)
+
 	// 检测是否有 web_search 工具
 	hasWebSearchTool := hasWebSearchTool(claudeReq.Tools)
 	requestType := "agent"
-	targetModel := mappedModel
+	targetModel := mappedModelBase // 发给上游的模型名，不含后缀
 	if hasWebSearchTool {
 		requestType = "web_search"
 		if targetModel != webSearchFallbackModel {
@@ -113,19 +117,26 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 	systemInstruction := buildSystemInstruction(claudeReq.System, targetModel, opts, claudeReq.Tools)
 
 	// 3. 构建 generationConfig
+	// reqForConfig.Model 设为带后缀的 mappedModel，让 buildGenerationConfig 解析 thinking 控制逻辑。
 	reqForConfig := claudeReq
 	if strippedThinking {
-		// If we had to downgrade thinking blocks to plain text due to missing/invalid signatures,
-		// disable upstream thinking mode to avoid signature/structure validation errors.
 		reqCopy := *claudeReq
 		reqCopy.Thinking = nil
 		reqForConfig = &reqCopy
 	}
-	if targetModel != "" && targetModel != reqForConfig.Model {
-		reqCopy := *reqForConfig
-		reqCopy.Model = targetModel
-		reqForConfig = &reqCopy
+	{
+		// 将 Model 替换为含后缀的 mappedModel，供 buildGenerationConfig 读取 thinking 预算后缀
+		configModel := mappedModel // 含后缀
+		if !mappedModelHasSuffix {
+			configModel = targetModel
+		}
+		if configModel != reqForConfig.Model {
+			reqCopy := *reqForConfig
+			reqCopy.Model = configModel
+			reqForConfig = &reqCopy
+		}
 	}
+	_ = mappedModelBudget // 后缀预算由 buildGenerationConfig 内部解析，此处仅用于标记已处理
 	generationConfig := buildGenerationConfig(reqForConfig)
 
 	// 4. 构建 tools
