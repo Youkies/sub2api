@@ -37,10 +37,17 @@ const (
 	// antigravityRateLimitThreshold 限流等待/切换阈值
 	// - 智能重试：retryDelay < 此阈值时等待后重试，>= 此阈值时直接限流模型
 	// - 预检查：剩余限流时间 < 此阈值时等待，>= 此阈值时切换账号
-	antigravityRateLimitThreshold       = 7 * time.Second
-	antigravitySmartRetryMinWait        = 1 * time.Second  // 智能重试最小等待时间
-	antigravitySmartRetryMaxAttempts    = 1                // 智能重试最大次数（仅重试 1 次，防止重复限流/长期等待）
-	antigravityDefaultRateLimitDuration = 30 * time.Second // 默认限流时间（无 retryDelay 时使用）
+	// 60s 与 llmgate/CPA2 对齐：短 QPM 限流（< 60s）原地等待，≥ 60s 视为账号级配额耗尽
+	antigravityRateLimitThreshold    = 60 * time.Second
+	antigravitySmartRetryMinWait     = 1 * time.Second // 智能重试最小等待时间
+	antigravitySmartRetryMaxAttempts = 1               // 智能重试最大次数（仅重试 1 次，防止重复限流/长期等待）
+	// antigravityDefaultRateLimitDuration 无 retryDelay 时的默认冷却时间。
+	// 上游未提供 retryDelay 通常意味着账号级配额耗尽（而非短暂 QPM 限流），
+	// 使用 2h 与 llmgate/CPA2 对齐，避免频繁切换账号后又快速恢复浪费调度资源。
+	antigravityDefaultRateLimitDuration = 2 * time.Hour
+	// antigravityRateLimitJitterPct 冷却时间的对称抖动比例（±25%）。
+	// 多账号同时冷却时防止所有账号在同一时刻恢复并同步重探测上游。
+	antigravityRateLimitJitterPct = 0.25
 
 	// MODEL_CAPACITY_EXHAUSTED 专用重试参数
 	// 模型容量不足时，所有账号共享同一容量池，切换账号无意义
@@ -57,7 +64,7 @@ const (
 	googleRPCReasonRateLimitExceeded      = "RATE_LIMIT_EXCEEDED"
 
 	// 单账号 503 退避重试：Service 层原地重试的最大次数
-	// 在 handleSmartRetry 中，对于 shouldRateLimitModel（长延迟 ≥ 7s）的情况，
+	// 在 handleSmartRetry 中，对于 shouldRateLimitModel（长延迟 ≥ 60s）的情况，
 	// 多账号模式下会设限流+切换账号；但单账号模式下改为原地等待+重试。
 	antigravitySingleAccountSmartRetryMaxAttempts = 3
 
@@ -197,9 +204,11 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 	shouldSmartRetry, shouldRateLimitModel, waitDuration, modelName, isModelCapacityExhausted := shouldTriggerAntigravitySmartRetry(p.account, respBody)
 
 	// AI Credits 超量请求：
-	// 仅在上游明确返回免费配额耗尽时才允许切换到 credits。
+	// 配额耗尽（QuotaExhausted）或模糊瞬时（AmbiguousTransient）时尝试切换到 credits。
+	// AmbiguousTransient 是裸 gRPC RESOURCE_EXHAUSTED，可能是免费配额压力，值得先试一次积分。
+	isCreditsRetryCandidate := category == antigravity429QuotaExhausted || category == antigravity429AmbiguousTransient
 	if resp.StatusCode == http.StatusTooManyRequests &&
-		category == antigravity429QuotaExhausted &&
+		isCreditsRetryCandidate &&
 		p.account.IsOveragesEnabled() &&
 		!p.account.isCreditsExhausted() {
 		result := s.attemptCreditsOveragesRetry(p, baseURL, modelName, waitDuration, resp.StatusCode, respBody)
@@ -220,12 +229,12 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 			return s.handleSingleAccountRetryInPlace(p, resp, respBody, baseURL, waitDuration, modelName)
 		}
 
-		rateLimitDuration := waitDuration
+		rateLimitDuration := antigravityJitterDuration(waitDuration, antigravityRateLimitJitterPct)
 		if rateLimitDuration <= 0 {
-			rateLimitDuration = antigravityDefaultRateLimitDuration
+			rateLimitDuration = antigravityJitterDuration(antigravityDefaultRateLimitDuration, antigravityRateLimitJitterPct)
 		}
-		logger.LegacyPrintf("service.antigravity_gateway", "%s status=%d oauth_long_delay model=%s account=%d upstream_retry_delay=%v body=%s (model rate limit, switch account)",
-			p.prefix, resp.StatusCode, modelName, p.account.ID, rateLimitDuration, truncateForLog(respBody, 200))
+		logger.LegacyPrintf("service.antigravity_gateway", "%s status=%d oauth_long_delay model=%s account=%d upstream_retry_delay=%v cooldown=%v body=%s (model rate limit, switch account)",
+			p.prefix, resp.StatusCode, modelName, p.account.ID, waitDuration, rateLimitDuration.Truncate(time.Second), truncateForLog(respBody, 200))
 
 		resetAt := time.Now().Add(rateLimitDuration)
 		if !s.setAntigravityModelRateLimits(p.ctx, p.accountRepo, p.account, modelName, p.prefix, resp.StatusCode, resetAt, false) {
@@ -402,6 +411,29 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 			switchError: &AntigravityAccountSwitchError{
 				OriginalAccountID: p.account.ID,
 				RateLimitedModel:  modelName,
+				IsStickySession:   p.isStickySession,
+			},
+		}
+	}
+
+	// AmbiguousTransient：裸 gRPC RESOURCE_EXHAUSTED（无结构化 RetryInfo）。
+	// 积分重试已在上方尝试（如果 overages 启用）；若未注入积分或积分也失败，
+	// 记录短暂冷却（5min ±25%，上限 15min）并切换账号，避免持续命中同一个节点。
+	if resp.StatusCode == http.StatusTooManyRequests && category == antigravity429AmbiguousTransient {
+		ambiguousCooldown := antigravityJitterDuration(antigravityAmbiguousTransientBase, antigravityRateLimitJitterPct)
+		if ambiguousCooldown > antigravityAmbiguousTransientCap {
+			ambiguousCooldown = antigravityAmbiguousTransientCap
+		}
+		logger.LegacyPrintf("service.antigravity_gateway", "%s status=429 ambiguous_transient model=%s account=%d cooldown=%v (switch account)",
+			p.prefix, p.requestedModel, p.account.ID, ambiguousCooldown.Truncate(time.Second))
+		resetAt := time.Now().Add(ambiguousCooldown)
+		s.setAntigravityModelRateLimits(p.ctx, p.accountRepo, p.account, p.requestedModel, p.prefix, resp.StatusCode, resetAt, false)
+		s.clearStickySession(p.ctx, p.groupID, p.sessionHash)
+		return &smartRetryResult{
+			action: smartRetryActionBreakWithResp,
+			switchError: &AntigravityAccountSwitchError{
+				OriginalAccountID: p.account.ID,
+				RateLimitedModel:  p.requestedModel,
 				IsStickySession:   p.isStickySession,
 			},
 		}
@@ -798,6 +830,20 @@ func shouldRetryAntigravityError(statusCode int) bool {
 	default:
 		return false
 	}
+}
+
+// antigravityJitterDuration 对冷却时间施加 ±jitterPct 的对称抖动，防止多账号同步恢复。
+func antigravityJitterDuration(d time.Duration, jitterPct float64) time.Duration {
+	if jitterPct <= 0 || d <= 0 {
+		return d
+	}
+	// [-jitterPct, +jitterPct] 均匀分布
+	jitter := float64(d) * jitterPct * (2*mathrand.Float64() - 1)
+	result := d + time.Duration(jitter)
+	if result <= 0 {
+		return d
+	}
+	return result
 }
 
 // isURLLevelRateLimit 判断是否为 URL 级别的限流（应切换 URL 重试）

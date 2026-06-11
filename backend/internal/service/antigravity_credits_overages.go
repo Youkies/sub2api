@@ -16,7 +16,7 @@ const (
 	// creditsExhaustedKey 是 model_rate_limits 中标记积分耗尽的特殊 key。
 	// 与普通模型限流完全同构：通过 SetModelRateLimit / isRateLimitActiveForKey 读写。
 	creditsExhaustedKey      = "AICredits"
-	creditsExhaustedDuration = 5 * time.Hour
+	creditsExhaustedDuration = 2 * time.Hour
 )
 
 type antigravity429Category string
@@ -25,12 +25,22 @@ const (
 	antigravity429Unknown        antigravity429Category = "unknown"
 	antigravity429RateLimited    antigravity429Category = "rate_limited"
 	antigravity429QuotaExhausted antigravity429Category = "quota_exhausted"
+	// antigravity429AmbiguousTransient 裸 gRPC RESOURCE_EXHAUSTED，无结构化 ErrorInfo。
+	// 通常是节点/上游级别压力，非单一账号信号，使用较短冷却时间。
+	antigravity429AmbiguousTransient antigravity429Category = "ambiguous_transient"
+)
+
+// antigravityAmbiguousTransientDuration 裸 gRPC 无结构信息时的冷却时间（5 分钟 + 抖动，上限 15 分钟）。
+const (
+	antigravityAmbiguousTransientBase = 5 * time.Minute
+	antigravityAmbiguousTransientCap  = 15 * time.Minute
 )
 
 var (
 	antigravityQuotaExhaustedKeywords = []string{
 		"quota_exhausted",
 		"quota exhausted",
+		"exhausted your capacity",
 	}
 
 	creditsExhaustedKeywords = []string{
@@ -58,18 +68,20 @@ func (a *Account) isCreditsExhausted() bool {
 }
 
 // setCreditsExhausted 标记账号积分耗尽：写入 model_rate_limits["AICredits"] + 更新缓存。
+// 冷却时间加 ±25% 抖动，防止多账号在同一时刻同步恢复。
 func (s *AntigravityGatewayService) setCreditsExhausted(ctx context.Context, account *Account) {
 	if account == nil || account.ID == 0 {
 		return
 	}
-	resetAt := time.Now().Add(creditsExhaustedDuration)
+	cooldown := antigravityJitterDuration(creditsExhaustedDuration, antigravityRateLimitJitterPct)
+	resetAt := time.Now().Add(cooldown)
 	if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, creditsExhaustedKey, resetAt); err != nil {
 		logger.LegacyPrintf("service.antigravity_gateway", "set credits exhausted failed: account=%d err=%v", account.ID, err)
 		return
 	}
 	s.updateAccountModelRateLimitInCache(ctx, account, creditsExhaustedKey, resetAt)
-	logger.LegacyPrintf("service.antigravity_gateway", "credits_exhausted_marked account=%d reset_at=%s",
-		account.ID, resetAt.UTC().Format(time.RFC3339))
+	logger.LegacyPrintf("service.antigravity_gateway", "credits_exhausted_marked account=%d reset_at=%s cooldown=%v",
+		account.ID, resetAt.UTC().Format(time.RFC3339), cooldown.Truncate(time.Second))
 }
 
 // clearCreditsExhausted 清除账号的 AICredits 限流 key。
@@ -93,21 +105,73 @@ func (s *AntigravityGatewayService) clearCreditsExhausted(ctx context.Context, a
 	}
 }
 
-// classifyAntigravity429 将 Antigravity 的 429 响应归类为配额耗尽、限流或未知。
+// classifyAntigravity429 将 Antigravity 的 429 响应归类。
+// 分类优先级（由高到低）：
+//  1. 结构化 ErrorInfo reason == QUOTA_EXHAUSTED                 → QuotaExhausted
+//  2. 结构化 RetryInfo + reason == RATE_LIMIT_EXCEEDED + delay > 60s → QuotaExhausted
+//  3. 结构化 RetryInfo + reason == RATE_LIMIT_EXCEEDED + delay ≤ 60s → RateLimited
+//  4. 关键词匹配 quota_exhausted / exhausted your capacity        → QuotaExhausted
+//  5. 裸 gRPC RESOURCE_EXHAUSTED（无结构化 details）              → AmbiguousTransient
+//  6. 其他                                                        → Unknown
 func classifyAntigravity429(body []byte) antigravity429Category {
 	if len(body) == 0 {
 		return antigravity429Unknown
 	}
+
+	// 优先使用结构化 ErrorInfo/RetryInfo 分类
+	if info := parseAntigravitySmartRetryInfo(body); info != nil && !info.IsModelCapacityExhausted {
+		if info.RetryDelay >= antigravityRateLimitThreshold {
+			return antigravity429QuotaExhausted
+		}
+		return antigravity429RateLimited
+	}
+
+	// 检查 QUOTA_EXHAUSTED reason（结构化但 parseAntigravitySmartRetryInfo 未覆盖的格式）
+	if isQuotaExhaustedReason(body) {
+		return antigravity429QuotaExhausted
+	}
+
+	// 关键词匹配
 	lowerBody := strings.ToLower(string(body))
 	for _, keyword := range antigravityQuotaExhaustedKeywords {
 		if strings.Contains(lowerBody, keyword) {
 			return antigravity429QuotaExhausted
 		}
 	}
-	if info := parseAntigravitySmartRetryInfo(body); info != nil && !info.IsModelCapacityExhausted {
-		return antigravity429RateLimited
+
+	// 裸 gRPC 默认 RESOURCE_EXHAUSTED（无结构化 details，非单账号信号）
+	if strings.Contains(lowerBody, "resource has been exhausted") &&
+		!strings.Contains(lowerBody, "capacity on this model") {
+		return antigravity429AmbiguousTransient
 	}
+
 	return antigravity429Unknown
+}
+
+// isQuotaExhaustedReason 检查 JSON 中是否有 reason == "QUOTA_EXHAUSTED" 的 ErrorInfo。
+func isQuotaExhaustedReason(body []byte) bool {
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return false
+	}
+	errObj, ok := parsed["error"].(map[string]any)
+	if !ok {
+		return false
+	}
+	details, ok := errObj["details"].([]any)
+	if !ok {
+		return false
+	}
+	for _, d := range details {
+		dm, ok := d.(map[string]any)
+		if !ok {
+			continue
+		}
+		if reason, ok := dm["reason"].(string); ok && reason == "QUOTA_EXHAUSTED" {
+			return true
+		}
+	}
+	return false
 }
 
 // injectEnabledCreditTypes 在已序列化的 v1internal JSON body 中注入 AI Credits 类型。
