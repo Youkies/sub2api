@@ -1046,6 +1046,10 @@ func mapAntigravityModel(account *Account, requestedModel string) string {
 		return ""
 	}
 	requestedModel = strings.TrimPrefix(requestedModel, "models/")
+	// 剥离思维链预算后缀（如 claude-opus-4-6-thinking(0)），映射表只存 base 模型名
+	if base, _, ok := antigravity.ParseThinkingBudgetSuffix(requestedModel); ok {
+		requestedModel = base
+	}
 
 	// 获取映射表（未配置时自动使用 DefaultAntigravityModelMapping）
 	mapping := account.GetModelMapping()

@@ -547,11 +547,11 @@ func isAntigravityOpusHighTierModel(model string) bool {
 		strings.HasPrefix(lower, "claude-opus-4-8")
 }
 
-// parseThinkingBudgetSuffix 解析模型名中的思维链预算后缀，格式为 "model-name(N)"。
+// ParseThinkingBudgetSuffix 解析模型名中的思维链预算后缀，格式为 "model-name(N)"。
 // 返回 (baseModel, budget, hasSuffix)：
 //   - hasSuffix=true 时 budget=0 表示隐藏思维链（不输出），budget>0 表示显式预算
 //   - hasSuffix=false 表示无后缀，调用方应使用请求体中的 thinking 字段
-func parseThinkingBudgetSuffix(model string) (baseModel string, budget int, hasSuffix bool) {
+func ParseThinkingBudgetSuffix(model string) (baseModel string, budget int, hasSuffix bool) {
 	idx := strings.LastIndex(model, "(")
 	if idx < 0 || !strings.HasSuffix(model, ")") {
 		return model, 0, false
@@ -565,8 +565,8 @@ func parseThinkingBudgetSuffix(model string) (baseModel string, budget int, hasS
 }
 
 func buildGenerationConfig(req *ClaudeRequest) *GeminiGenerationConfig {
-	// 解析模型名后缀（如 claude-opus-4-6(0) 表示隐藏思维链）
-	baseModel, suffixBudget, hasSuffix := parseThinkingBudgetSuffix(req.Model)
+	// 解析模型名后缀（如 claude-opus-4-6-thinking(0) 表示隐藏思维链）
+	baseModel, suffixBudget, hasSuffix := ParseThinkingBudgetSuffix(req.Model)
 	effectiveModel := req.Model
 	if hasSuffix {
 		effectiveModel = baseModel
