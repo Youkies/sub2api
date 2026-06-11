@@ -39,19 +39,16 @@ func generateStableSessionID(contents []GeminiContent) string {
 	return "-" + strconv.FormatInt(n, 10)
 }
 
+// TransformOptions 保留字段仅供兼容，buildSystemInstruction 已改为纯透传，
+// EnableIdentityPatch / IdentityPatch / EnableMCPXML 均不再生效。
 type TransformOptions struct {
-	EnableIdentityPatch bool
-	// IdentityPatch 可选：自定义注入到 systemInstruction 开头的身份防护提示词；
-	// 为空时使用默认模板（包含 [IDENTITY_PATCH] 及 SYSTEM_PROMPT_BEGIN 标记）。
-	IdentityPatch string
-	EnableMCPXML  bool
+	EnableIdentityPatch bool   // 已废弃，无效
+	IdentityPatch       string // 已废弃，无效
+	EnableMCPXML        bool   // 已废弃，无效
 }
 
 func DefaultTransformOptions() TransformOptions {
-	return TransformOptions{
-		EnableIdentityPatch: true,
-		EnableMCPXML:        true,
-	}
+	return TransformOptions{}
 }
 
 // webSearchFallbackModel web_search 请求使用的降级模型

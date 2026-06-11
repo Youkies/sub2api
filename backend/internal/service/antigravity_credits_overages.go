@@ -213,9 +213,9 @@ func shouldMarkCreditsExhausted(resp *http.Response, respBody []byte, reqErr err
 	if resp.StatusCode >= 500 || resp.StatusCode == http.StatusRequestTimeout {
 		return false
 	}
-	// 注意：不再检查 isURLLevelRateLimit。此函数仅在积分重试失败后调用，
-	// 如果注入 enabledCreditTypes 后仍返回 "Resource has been exhausted"，
-	// 说明积分也已耗尽，应该标记。clearCreditsExhausted 会在后续成功时自动清除。
+	// 仅在响应包含明确的积分相关关键词时才标记耗尽。
+	// 裸 "Resource has been exhausted" 不在判断范围内：该响应是节点级压力信号，
+	// 与账号积分余额无关，误标记会导致后续积分路径被跳过。
 	if info := parseAntigravitySmartRetryInfo(respBody); info != nil {
 		return false
 	}
