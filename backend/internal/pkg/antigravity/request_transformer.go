@@ -547,10 +547,34 @@ func isAntigravityOpusHighTierModel(model string) bool {
 		strings.HasPrefix(lower, "claude-opus-4-8")
 }
 
+// parseThinkingBudgetSuffix 解析模型名中的思维链预算后缀，格式为 "model-name(N)"。
+// 返回 (baseModel, budget, hasSuffix)：
+//   - hasSuffix=true 时 budget=0 表示隐藏思维链（不输出），budget>0 表示显式预算
+//   - hasSuffix=false 表示无后缀，调用方应使用请求体中的 thinking 字段
+func parseThinkingBudgetSuffix(model string) (baseModel string, budget int, hasSuffix bool) {
+	idx := strings.LastIndex(model, "(")
+	if idx < 0 || !strings.HasSuffix(model, ")") {
+		return model, 0, false
+	}
+	inner := model[idx+1 : len(model)-1]
+	val, err := strconv.Atoi(inner)
+	if err != nil || val < 0 {
+		return model, 0, false
+	}
+	return model[:idx], val, true
+}
+
 func buildGenerationConfig(req *ClaudeRequest) *GeminiGenerationConfig {
-	maxLimit := maxOutputTokensLimit(req.Model)
+	// 解析模型名后缀（如 claude-opus-4-6(0) 表示隐藏思维链）
+	baseModel, suffixBudget, hasSuffix := parseThinkingBudgetSuffix(req.Model)
+	effectiveModel := req.Model
+	if hasSuffix {
+		effectiveModel = baseModel
+	}
+
+	maxLimit := maxOutputTokensLimit(effectiveModel)
 	config := &GeminiGenerationConfig{
-		MaxOutputTokens: defaultMaxOutputTokens, // 默认最大输出
+		MaxOutputTokens: defaultMaxOutputTokens,
 		StopSequences:   DefaultStopSequences,
 	}
 
@@ -559,30 +583,40 @@ func buildGenerationConfig(req *ClaudeRequest) *GeminiGenerationConfig {
 		config.MaxOutputTokens = req.MaxTokens
 	}
 
-	// Thinking 配置
-	if req.Thinking != nil && (req.Thinking.Type == "enabled" || req.Thinking.Type == "adaptive") {
+	// 后缀 (0)：隐藏思维链 —— 上游正常执行 thinking，但 includeThoughts=false 不返回给客户端
+	if hasSuffix && suffixBudget == 0 {
+		config.ThinkingConfig = &GeminiThinkingConfig{
+			IncludeThoughts: false,
+			ThinkingBudget:  -1, // 动态预算，让上游自行决定
+		}
+		return config
+	}
+
+	// Thinking 配置（来自请求体或后缀正预算）
+	thinkingEnabled := req.Thinking != nil && (req.Thinking.Type == "enabled" || req.Thinking.Type == "adaptive")
+	if thinkingEnabled || (hasSuffix && suffixBudget > 0) {
 		config.ThinkingConfig = &GeminiThinkingConfig{
 			IncludeThoughts: true,
 		}
 
-		// - thinking.type=enabled：budget_tokens>0 用显式预算
-		// - thinking.type=adaptive：在 Antigravity 的高阶 Opus（4.6+）上覆写为 （24576）
 		budget := -1
-		if req.Thinking.BudgetTokens > 0 {
+		if hasSuffix && suffixBudget > 0 {
+			// 后缀优先
+			budget = suffixBudget
+		} else if req.Thinking.BudgetTokens > 0 {
 			budget = req.Thinking.BudgetTokens
 		}
-		if req.Thinking.Type == "adaptive" && isAntigravityOpusHighTierModel(req.Model) {
+
+		// adaptive 在高阶 Opus 上覆写为高预算
+		if req.Thinking != nil && req.Thinking.Type == "adaptive" && isAntigravityOpusHighTierModel(effectiveModel) {
 			budget = ClaudeAdaptiveHighThinkingBudgetTokens
 		}
 
-		// 正预算需要做上限与 max_tokens 约束；动态预算（-1）直接透传给上游。
+		// 正预算：做上限与 max_tokens 约束
 		if budget > 0 {
-			// gemini-2.5-flash 上限
-			if strings.Contains(req.Model, "gemini-2.5-flash") && budget > Gemini25FlashThinkingBudgetLimit {
+			if strings.Contains(effectiveModel, "gemini-2.5-flash") && budget > Gemini25FlashThinkingBudgetLimit {
 				budget = Gemini25FlashThinkingBudgetLimit
 			}
-
-			// 自动修正：max_tokens 必须大于 budget_tokens（Claude 上游要求）
 			if adjusted, ok := ensureMaxTokensGreaterThanBudget(config.MaxOutputTokens, budget); ok {
 				log.Printf("[Antigravity] Auto-adjusted max_tokens from %d to %d (must be > budget_tokens=%d)",
 					config.MaxOutputTokens, adjusted, budget)
