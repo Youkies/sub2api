@@ -424,16 +424,21 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 		if ambiguousCooldown > antigravityAmbiguousTransientCap {
 			ambiguousCooldown = antigravityAmbiguousTransientCap
 		}
+		// 使用最终映射模型 key，确保预检查能命中同一 key
+		ambiguousModelKey := resolveFinalAntigravityModelKey(p.ctx, p.account, p.requestedModel)
+		if ambiguousModelKey == "" {
+			ambiguousModelKey = resolveAntigravityModelKey(p.requestedModel)
+		}
 		logger.LegacyPrintf("service.antigravity_gateway", "%s status=429 ambiguous_transient model=%s account=%d cooldown=%v (switch account)",
-			p.prefix, p.requestedModel, p.account.ID, ambiguousCooldown.Truncate(time.Second))
+			p.prefix, ambiguousModelKey, p.account.ID, ambiguousCooldown.Truncate(time.Second))
 		resetAt := time.Now().Add(ambiguousCooldown)
-		s.setAntigravityModelRateLimits(p.ctx, p.accountRepo, p.account, p.requestedModel, p.prefix, resp.StatusCode, resetAt, false)
+		s.setAntigravityModelRateLimits(p.ctx, p.accountRepo, p.account, ambiguousModelKey, p.prefix, resp.StatusCode, resetAt, false)
 		s.clearStickySession(p.ctx, p.groupID, p.sessionHash)
 		return &smartRetryResult{
 			action: smartRetryActionBreakWithResp,
 			switchError: &AntigravityAccountSwitchError{
 				OriginalAccountID: p.account.ID,
-				RateLimitedModel:  p.requestedModel,
+				RateLimitedModel:  ambiguousModelKey,
 				IsStickySession:   p.isStickySession,
 			},
 		}

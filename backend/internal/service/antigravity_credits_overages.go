@@ -43,6 +43,8 @@ var (
 		"exhausted your capacity",
 	}
 
+	// creditsExhaustedKeywords 仅包含明确指向 AI Credits 余额不足的关键词。
+	// 不包含裸 "resource has been exhausted"，避免将节点瞬时压力误判为积分耗尽。
 	creditsExhaustedKeywords = []string{
 		"google_one_ai",
 		"insufficient credit",
@@ -55,7 +57,6 @@ var (
 		"minimumcreditamountforusage",
 		"minimum credit amount for usage",
 		"minimum credit",
-		"resource has been exhausted",
 	}
 )
 

@@ -132,7 +132,7 @@ func TestHandleSmartRetry_URLLevelRateLimit(t *testing.T) {
 	require.Nil(t, result.switchError)
 }
 
-// TestHandleSmartRetry_LongDelay_ReturnsSwitchError 测试 retryDelay >= 阈值时返回 switchError
+// TestHandleSmartRetry_LongDelay_ReturnsSwitchError 测试 retryDelay >= 60s 阈值时返回 switchError
 func TestHandleSmartRetry_LongDelay_ReturnsSwitchError(t *testing.T) {
 	repo := &stubAntigravityAccountRepo{}
 	account := &Account{
@@ -142,13 +142,13 @@ func TestHandleSmartRetry_LongDelay_ReturnsSwitchError(t *testing.T) {
 		Platform: PlatformAntigravity,
 	}
 
-	// 15s >= 7s 阈值，应该返回 switchError
+	// 90s >= 60s 阈值，应该返回 switchError
 	respBody := []byte(`{
 		"error": {
 			"status": "RESOURCE_EXHAUSTED",
 			"details": [
 				{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "metadata": {"model": "claude-sonnet-4-5"}, "reason": "RATE_LIMIT_EXCEEDED"},
-				{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "15s"}
+				{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "90s"}
 			]
 		}
 	}`)
@@ -555,7 +555,7 @@ func TestHandleSmartRetry_NonModelRateLimit_ContinuesDefaultLogic(t *testing.T) 
 	require.Nil(t, result.switchError)
 }
 
-// TestHandleSmartRetry_ExactlyAtThreshold_ReturnsSwitchError 测试刚好等于阈值时返回 switchError
+// TestHandleSmartRetry_ExactlyAtThreshold_ReturnsSwitchError 测试刚好等于阈值（60s）时返回 switchError
 func TestHandleSmartRetry_ExactlyAtThreshold_ReturnsSwitchError(t *testing.T) {
 	repo := &stubAntigravityAccountRepo{}
 	account := &Account{
@@ -565,13 +565,13 @@ func TestHandleSmartRetry_ExactlyAtThreshold_ReturnsSwitchError(t *testing.T) {
 		Platform: PlatformAntigravity,
 	}
 
-	// 刚好 7s = 7s 阈值，应该返回 switchError
+	// 刚好 60s = 60s 阈值，应该返回 switchError
 	respBody := []byte(`{
 		"error": {
 			"status": "RESOURCE_EXHAUSTED",
 			"details": [
 				{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "metadata": {"model": "gemini-pro"}, "reason": "RATE_LIMIT_EXCEEDED"},
-				{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "7s"}
+				{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "60s"}
 			]
 		}
 	}`)
@@ -608,13 +608,13 @@ func TestHandleSmartRetry_ExactlyAtThreshold_ReturnsSwitchError(t *testing.T) {
 
 // TestAntigravityRetryLoop_HandleSmartRetry_SwitchError_Propagates 测试 switchError 正确传播到上层
 func TestAntigravityRetryLoop_HandleSmartRetry_SwitchError_Propagates(t *testing.T) {
-	// 模拟 429 + 长延迟的响应
+	// 模拟 429 + 长延迟的响应（90s >= 60s 阈值）
 	respBody := []byte(`{
 		"error": {
 			"status": "RESOURCE_EXHAUSTED",
 			"details": [
 				{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "metadata": {"model": "claude-opus-4-6"}, "reason": "RATE_LIMIT_EXCEEDED"},
-				{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "30s"}
+				{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "90s"}
 			]
 		}
 	}`)
@@ -1117,13 +1117,13 @@ func TestHandleSmartRetry_LongDelay_StickySession_ClearsSession(t *testing.T) {
 		Platform: PlatformAntigravity,
 	}
 
-	// 15s >= 7s 阈值 → 走长延迟路径
+	// 90s >= 60s 阈值 → 走长延迟路径
 	respBody := []byte(`{
 		"error": {
 			"status": "RESOURCE_EXHAUSTED",
 			"details": [
 				{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "metadata": {"model": "claude-sonnet-4-5"}, "reason": "RATE_LIMIT_EXCEEDED"},
-				{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "15s"}
+				{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "90s"}
 			]
 		}
 	}`)

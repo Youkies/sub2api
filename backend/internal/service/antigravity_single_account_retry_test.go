@@ -142,7 +142,7 @@ func TestHandleSmartRetry_503_LongDelay_SingleAccountRetry_RetryInPlace(t *testi
 }
 
 // TestHandleSmartRetry_503_LongDelay_NoSingleAccountRetry_StillSwitches
-// 对照组：503 + retryDelay >= 7s + 无 SingleAccountRetry 标记
+// 对照组：503 + retryDelay >= 60s + 无 SingleAccountRetry 标记
 // → 照常设模型限流 + 切换账号
 func TestHandleSmartRetry_503_LongDelay_NoSingleAccountRetry_StillSwitches(t *testing.T) {
 	repo := &stubAntigravityAccountRepo{}
@@ -153,7 +153,7 @@ func TestHandleSmartRetry_503_LongDelay_NoSingleAccountRetry_StillSwitches(t *te
 		Platform: PlatformAntigravity,
 	}
 
-	// 503 + 39s >= 7s 阈值（使用 RATE_LIMIT_EXCEEDED 而非 MODEL_CAPACITY_EXHAUSTED，
+	// 503 + 90s >= 60s 阈值（使用 RATE_LIMIT_EXCEEDED 而非 MODEL_CAPACITY_EXHAUSTED，
 	// 因为 MODEL_CAPACITY_EXHAUSTED 走独立的重试路径，不触发 shouldRateLimitModel）
 	respBody := []byte(`{
 		"error": {
@@ -161,7 +161,7 @@ func TestHandleSmartRetry_503_LongDelay_NoSingleAccountRetry_StillSwitches(t *te
 			"status": "RESOURCE_EXHAUSTED",
 			"details": [
 				{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "metadata": {"model": "gemini-3-pro-high"}, "reason": "RATE_LIMIT_EXCEEDED"},
-				{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "39s"}
+				{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "90s"}
 			]
 		}
 	}`)
@@ -203,7 +203,7 @@ func TestHandleSmartRetry_503_LongDelay_NoSingleAccountRetry_StillSwitches(t *te
 }
 
 // TestHandleSmartRetry_429_LongDelay_SingleAccountRetry_StillSwitches
-// 边界情况：429（非 503）+ SingleAccountRetry 标记
+// 边界情况：429（非 503）+ SingleAccountRetry 标记 + retryDelay >= 60s
 // → 单账号原地重试仅针对 503，429 依然走切换账号逻辑
 func TestHandleSmartRetry_429_LongDelay_SingleAccountRetry_StillSwitches(t *testing.T) {
 	repo := &stubAntigravityAccountRepo{}
@@ -214,13 +214,13 @@ func TestHandleSmartRetry_429_LongDelay_SingleAccountRetry_StillSwitches(t *test
 		Platform: PlatformAntigravity,
 	}
 
-	// 429 + 15s >= 7s 阈值
+	// 429 + 90s >= 60s 阈值
 	respBody := []byte(`{
 		"error": {
 			"status": "RESOURCE_EXHAUSTED",
 			"details": [
 				{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "metadata": {"model": "claude-sonnet-4-5"}, "reason": "RATE_LIMIT_EXCEEDED"},
-				{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "15s"}
+				{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "90s"}
 			]
 		}
 	}`)

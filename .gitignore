@@ -1,5 +1,6 @@
 docs/claude-relay-service/
 .codex
+.ai_memory/
 
 # ===================
 # Go 后端

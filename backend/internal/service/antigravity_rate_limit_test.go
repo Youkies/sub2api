@@ -104,6 +104,8 @@ func (s *stubAntigravityAccountRepo) UpdateExtra(ctx context.Context, id int64, 
 	return nil
 }
 
+// TestAntigravityRetryLoop_NoURLFallback_UsesConfiguredBaseURL 验证无 URL fallback 时
+// 所有请求均发到同一 base URL（使用非分类 429 响应，避免触发账号切换信号）。
 func TestAntigravityRetryLoop_NoURLFallback_UsesConfiguredBaseURL(t *testing.T) {
 	t.Setenv(antigravityForwardBaseURLEnv, "")
 
@@ -119,7 +121,8 @@ func TestAntigravityRetryLoop_NoURLFallback_UsesConfiguredBaseURL(t *testing.T) 
 	antigravity.BaseURLs = []string{base1, base2}
 	antigravity.DefaultURLAvailability = antigravity.NewURLAvailability(time.Minute)
 
-	upstream := &stubAntigravityUpstream{firstBase: base1, secondBase: base2}
+	// 使用不触发任何分类（Unknown）的 429 body，避免 AmbiguousTransient 导致提前 switchError
+	unknownUpstream := &stubUnknown429Upstream{base: base1}
 	account := &Account{
 		ID:          1,
 		Name:        "acc-1",
@@ -139,7 +142,7 @@ func TestAntigravityRetryLoop_NoURLFallback_UsesConfiguredBaseURL(t *testing.T) 
 		accessToken:    "token",
 		action:         "generateContent",
 		body:           []byte(`{"input":"test"}`),
-		httpUpstream:   upstream,
+		httpUpstream:   unknownUpstream,
 		requestedModel: "claude-sonnet-4-5",
 		handleError: func(ctx context.Context, prefix string, account *Account, statusCode int, headers http.Header, body []byte, requestedModel string, groupID int64, sessionHash string, isStickySession bool) *handleModelRateLimitResult {
 			handleErrorCalled = true
@@ -153,8 +156,8 @@ func TestAntigravityRetryLoop_NoURLFallback_UsesConfiguredBaseURL(t *testing.T) 
 	defer func() { _ = result.resp.Body.Close() }()
 	require.Equal(t, http.StatusTooManyRequests, result.resp.StatusCode)
 	require.True(t, handleErrorCalled)
-	require.Len(t, upstream.calls, antigravityMaxRetries)
-	for _, callURL := range upstream.calls {
+	require.Len(t, unknownUpstream.calls, antigravityMaxRetries)
+	for _, callURL := range unknownUpstream.calls {
 		require.True(t, strings.HasPrefix(callURL, base1))
 	}
 
@@ -163,19 +166,39 @@ func TestAntigravityRetryLoop_NoURLFallback_UsesConfiguredBaseURL(t *testing.T) 
 	require.Equal(t, base1, available[0])
 }
 
+// stubUnknown429Upstream 始终返回不触发任何分类的 429（Unknown category）
+type stubUnknown429Upstream struct {
+	base  string
+	calls []string
+}
+
+func (s *stubUnknown429Upstream) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	s.calls = append(s.calls, req.URL.String())
+	return &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"rate limited"}}`)),
+	}, nil
+}
+
+func (s *stubUnknown429Upstream) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	return s.Do(req, proxyURL, accountID, accountConcurrency)
+}
+
 // TestHandleUpstreamError_429_ModelRateLimit 测试 429 模型限流场景
+// retryDelay >= 60s 才触发账号切换（与 llmgate/CPA2 对齐）
 func TestHandleUpstreamError_429_ModelRateLimit(t *testing.T) {
 	repo := &stubAntigravityAccountRepo{}
 	svc := &AntigravityGatewayService{accountRepo: repo}
 	account := &Account{ID: 1, Name: "acc-1", Platform: PlatformAntigravity}
 
-	// 429 + RATE_LIMIT_EXCEEDED + 模型名 → 模型限流
+	// 429 + RATE_LIMIT_EXCEEDED + retryDelay 90s (>= 60s) → 模型限流 + 切换账号
 	body := []byte(`{
 		"error": {
 			"status": "RESOURCE_EXHAUSTED",
 			"details": [
 				{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "metadata": {"model": "claude-sonnet-4-5"}, "reason": "RATE_LIMIT_EXCEEDED"},
-				{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "15s"}
+				{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "90s"}
 			]
 		}
 	}`)
@@ -578,7 +601,7 @@ func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
 			modelName:               "gemini-3-flash",
 		},
 		{
-			name:    "OAuth account with long delay (>= 7s) - direct rate limit",
+			name:    "OAuth account with 15s delay (< 60s threshold) - smart retry",
 			account: oauthAccount,
 			body: `{
 				"error": {
@@ -589,8 +612,26 @@ func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
 					]
 				}
 			}`,
+			expectedShouldRetry:     true,
+			expectedShouldRateLimit: false,
+			minWait:                 15 * time.Second,
+			modelName:               "claude-sonnet-4-5",
+		},
+		{
+			name:    "OAuth account with long delay (>= 60s) - direct rate limit",
+			account: oauthAccount,
+			body: `{
+				"error": {
+					"status": "RESOURCE_EXHAUSTED",
+					"details": [
+						{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "metadata": {"model": "claude-sonnet-4-5"}, "reason": "RATE_LIMIT_EXCEEDED"},
+						{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "90s"}
+					]
+				}
+			}`,
 			expectedShouldRetry:     false,
 			expectedShouldRateLimit: true,
+			minWait:                 90 * time.Second,
 			modelName:               "claude-sonnet-4-5",
 		},
 		{
@@ -626,20 +667,20 @@ func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
 			expectedShouldRateLimit: false,
 		},
 		{
-			name:    "OAuth account with exactly 7s delay - direct rate limit",
+			name:    "OAuth account with exactly 60s delay - direct rate limit (boundary)",
 			account: oauthAccount,
 			body: `{
 				"error": {
 					"status": "RESOURCE_EXHAUSTED",
 					"details": [
 						{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "metadata": {"model": "gemini-pro"}, "reason": "RATE_LIMIT_EXCEEDED"},
-						{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "7s"}
+						{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "60s"}
 					]
 				}
 			}`,
 			expectedShouldRetry:     false,
 			expectedShouldRateLimit: true,
-			minWait:                 7 * time.Second,
+			minWait:                 60 * time.Second,
 			modelName:               "gemini-pro",
 		},
 		{
@@ -681,7 +722,7 @@ func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
 			modelName:                        "gemini-2.5-flash",
 		},
 		{
-			name:    "429 RESOURCE_EXHAUSTED with RATE_LIMIT_EXCEEDED - no retryDelay - use default rate limit",
+			name:    "429 RESOURCE_EXHAUSTED with RATE_LIMIT_EXCEEDED - no retryDelay - use default rate limit (2h)",
 			account: oauthAccount,
 			body: `{
 				"error": {
@@ -695,7 +736,7 @@ func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
 			}`,
 			expectedShouldRetry:     false,
 			expectedShouldRateLimit: true,
-			minWait:                 30 * time.Second,
+			minWait:                 2 * time.Hour,
 			modelName:               "claude-sonnet-4-5",
 		},
 	}

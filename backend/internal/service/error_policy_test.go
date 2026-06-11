@@ -413,7 +413,7 @@ func TestApplyErrorPolicy_GeminiRateLimitBypassesCustomSkip(t *testing.T) {
 			"status": "RESOURCE_EXHAUSTED",
 			"details": [
 				{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "metadata": {"model": "gemini-3-flash"}, "reason": "RATE_LIMIT_EXCEEDED"},
-				{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "15s"}
+				{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "90s"}
 			]
 		}
 	}`)
