@@ -120,14 +120,19 @@ export function useAntigravityOAuth() {
       expiresAt = tokenInfo.expires_at.trim()
     }
 
-    return {
+    const creds: Record<string, unknown> = {
       access_token: tokenInfo.access_token,
-      refresh_token: tokenInfo.refresh_token,
       token_type: tokenInfo.token_type,
       expires_at: expiresAt,
       project_id: tokenInfo.project_id,
-      email: tokenInfo.email
+      email: tokenInfo.email,
     }
+    // Google 刷新 token 时不一定返回新的 refresh_token（只有首次授权才返回）。
+    // 为空时不写入，避免覆盖 DB 中已有的 refresh_token。
+    if (tokenInfo.refresh_token) {
+      creds.refresh_token = tokenInfo.refresh_token
+    }
+    return creds
   }
 
   return {
