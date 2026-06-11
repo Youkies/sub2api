@@ -5133,7 +5133,11 @@ const handleAntigravityValidateRT = async (refreshTokenInput: string) => {
         }
 
         const credentials = antigravityOAuth.buildCredentials(tokenInfo)
-        
+        // Google 刷新时不返回新的 refresh_token，用用户输入的原始值兜底
+        if (!credentials.refresh_token) {
+          credentials.refresh_token = refreshTokens[i]
+        }
+
         // Generate account name with index for batch
         const accountName = refreshTokens.length > 1 ? `${form.name} #${i + 1}` : form.name
 
