@@ -909,6 +909,7 @@ func TestSetAntigravityModelRateLimits_ClaudeDoesNotWriteGeminiScope(t *testing.
 
 func TestAntigravityRetryLoop_PreCheck_SwitchesWhenRateLimited(t *testing.T) {
 	upstream := &recordingOKUpstream{}
+	futureResetAt := time.Now().Add(2 * time.Second).Format(time.RFC3339)
 	account := &Account{
 		ID:          1,
 		Name:        "acc-1",
@@ -919,7 +920,11 @@ func TestAntigravityRetryLoop_PreCheck_SwitchesWhenRateLimited(t *testing.T) {
 		Extra: map[string]any{
 			modelRateLimitsKey: map[string]any{
 				"claude-sonnet-4-5": map[string]any{
-					"rate_limit_reset_at": time.Now().Add(2 * time.Second).Format(time.RFC3339),
+					"rate_limit_reset_at": futureResetAt,
+				},
+				// overages 强制开启，需积分也耗尽才触发切换
+				creditsExhaustedKey: map[string]any{
+					"rate_limit_reset_at": futureResetAt,
 				},
 			},
 		},
@@ -952,6 +957,7 @@ func TestAntigravityRetryLoop_PreCheck_SwitchesWhenRateLimited(t *testing.T) {
 
 func TestAntigravityRetryLoop_PreCheck_SwitchesWhenRemainingLong(t *testing.T) {
 	upstream := &recordingOKUpstream{}
+	futureResetAt2 := time.Now().Add(11 * time.Second).Format(time.RFC3339)
 	account := &Account{
 		ID:          2,
 		Name:        "acc-2",
@@ -962,7 +968,10 @@ func TestAntigravityRetryLoop_PreCheck_SwitchesWhenRemainingLong(t *testing.T) {
 		Extra: map[string]any{
 			modelRateLimitsKey: map[string]any{
 				"claude-sonnet-4-5": map[string]any{
-					"rate_limit_reset_at": time.Now().Add(11 * time.Second).Format(time.RFC3339),
+					"rate_limit_reset_at": futureResetAt2,
+				},
+				creditsExhaustedKey: map[string]any{
+					"rate_limit_reset_at": futureResetAt2,
 				},
 			},
 		},

@@ -211,6 +211,9 @@ func TestGatewaySelectAccountWithLoadAwareness_SkipsAntigravityGeminiFamilyRateL
 						antigravityGeminiModelRateLimitKey: map[string]any{
 							"rate_limit_reset_at": resetAt,
 						},
+						creditsExhaustedKey: map[string]any{
+							"rate_limit_reset_at": resetAt,
+						},
 					},
 				},
 			},

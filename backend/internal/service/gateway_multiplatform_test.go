@@ -1252,6 +1252,10 @@ func TestGatewayService_selectAccountWithMixedScheduling(t *testing.T) {
 							antigravityGeminiModelRateLimitKey: map[string]any{
 								"rate_limit_reset_at": resetAt,
 							},
+							// overages 强制开启，需积分也耗尽才触发跳过
+							creditsExhaustedKey: map[string]any{
+								"rate_limit_reset_at": resetAt,
+							},
 						},
 					},
 				},
@@ -1265,6 +1269,9 @@ func TestGatewayService_selectAccountWithMixedScheduling(t *testing.T) {
 						"mixed_scheduling": true,
 						modelRateLimitsKey: map[string]any{
 							antigravityGeminiModelRateLimitKey: map[string]any{
+								"rate_limit_reset_at": resetAt,
+							},
+							creditsExhaustedKey: map[string]any{
 								"rate_limit_reset_at": resetAt,
 							},
 						},

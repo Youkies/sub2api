@@ -5,9 +5,11 @@ package service
 import (
 	"bytes"
 	"context"
+	"io"
+	"time"
+
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/stretchr/testify/require"
-	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -135,11 +137,19 @@ func TestHandleSmartRetry_URLLevelRateLimit(t *testing.T) {
 // TestHandleSmartRetry_LongDelay_ReturnsSwitchError 测试 retryDelay >= 60s 阈值时返回 switchError
 func TestHandleSmartRetry_LongDelay_ReturnsSwitchError(t *testing.T) {
 	repo := &stubAntigravityAccountRepo{}
+	futureResetAtSR := time.Now().Add(time.Hour).Format(time.RFC3339)
 	account := &Account{
 		ID:       1,
 		Name:     "acc-1",
 		Type:     AccountTypeOAuth,
 		Platform: PlatformAntigravity,
+		Extra: map[string]any{
+			modelRateLimitsKey: map[string]any{
+				creditsExhaustedKey: map[string]any{
+					"rate_limit_reset_at": futureResetAtSR,
+				},
+			},
+		},
 	}
 
 	// 90s >= 60s 阈值，应该返回 switchError
@@ -558,11 +568,19 @@ func TestHandleSmartRetry_NonModelRateLimit_ContinuesDefaultLogic(t *testing.T) 
 // TestHandleSmartRetry_ExactlyAtThreshold_ReturnsSwitchError 测试刚好等于阈值（60s）时返回 switchError
 func TestHandleSmartRetry_ExactlyAtThreshold_ReturnsSwitchError(t *testing.T) {
 	repo := &stubAntigravityAccountRepo{}
+	futureResetAtET := time.Now().Add(time.Hour).Format(time.RFC3339)
 	account := &Account{
 		ID:       6,
 		Name:     "acc-6",
 		Type:     AccountTypeOAuth,
 		Platform: PlatformAntigravity,
+		Extra: map[string]any{
+			modelRateLimitsKey: map[string]any{
+				creditsExhaustedKey: map[string]any{
+					"rate_limit_reset_at": futureResetAtET,
+				},
+			},
+		},
 	}
 
 	// 刚好 60s = 60s 阈值，应该返回 switchError
@@ -629,6 +647,7 @@ func TestAntigravityRetryLoop_HandleSmartRetry_SwitchError_Propagates(t *testing
 	}
 
 	repo := &stubAntigravityAccountRepo{}
+	futureResetAtProp := time.Now().Add(time.Hour).Format(time.RFC3339)
 	account := &Account{
 		ID:          7,
 		Name:        "acc-7",
@@ -637,6 +656,13 @@ func TestAntigravityRetryLoop_HandleSmartRetry_SwitchError_Propagates(t *testing
 		Schedulable: true,
 		Status:      StatusActive,
 		Concurrency: 1,
+		Extra: map[string]any{
+			modelRateLimitsKey: map[string]any{
+				creditsExhaustedKey: map[string]any{
+					"rate_limit_reset_at": futureResetAtProp,
+				},
+			},
+		},
 	}
 
 	svc := &AntigravityGatewayService{}
@@ -732,11 +758,19 @@ func TestHandleSmartRetry_NetworkError_ExhaustsRetry(t *testing.T) {
 // TestHandleSmartRetry_NoRetryDelay_UsesDefaultRateLimit 测试无 retryDelay 时使用默认 1 分钟限流
 func TestHandleSmartRetry_NoRetryDelay_UsesDefaultRateLimit(t *testing.T) {
 	repo := &stubAntigravityAccountRepo{}
+	futureResetAtND := time.Now().Add(time.Hour).Format(time.RFC3339)
 	account := &Account{
 		ID:       9,
 		Name:     "acc-9",
 		Type:     AccountTypeOAuth,
 		Platform: PlatformAntigravity,
+		Extra: map[string]any{
+			modelRateLimitsKey: map[string]any{
+				creditsExhaustedKey: map[string]any{
+					"rate_limit_reset_at": futureResetAtND,
+				},
+			},
+		},
 	}
 
 	// 429 + RATE_LIMIT_EXCEEDED + 无 retryDelay → 使用默认 1 分钟限流
@@ -1110,11 +1144,19 @@ func TestHandleSmartRetry_ShortDelay_StickySession_SuccessRetry_NoDeleteSession(
 func TestHandleSmartRetry_LongDelay_StickySession_ClearsSession(t *testing.T) {
 	repo := &stubAntigravityAccountRepo{}
 	cache := &stubSmartRetryCache{}
+	futureResetAtSS := time.Now().Add(time.Hour).Format(time.RFC3339)
 	account := &Account{
 		ID:       14,
 		Name:     "acc-14",
 		Type:     AccountTypeOAuth,
 		Platform: PlatformAntigravity,
+		Extra: map[string]any{
+			modelRateLimitsKey: map[string]any{
+				creditsExhaustedKey: map[string]any{
+					"rate_limit_reset_at": futureResetAtSS,
+				},
+			},
+		},
 	}
 
 	// 90s >= 60s 阈值 → 走长延迟路径

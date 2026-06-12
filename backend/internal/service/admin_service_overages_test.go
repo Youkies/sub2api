@@ -27,6 +27,8 @@ func (r *updateAccountOveragesRepoStub) Update(ctx context.Context, account *Acc
 }
 
 func TestUpdateAccount_DisableOveragesClearsAICreditsKey(t *testing.T) {
+	t.Skip("overages is now always enabled for Antigravity accounts; disabling is no longer supported")
+
 	accountID := int64(101)
 	repo := &updateAccountOveragesRepoStub{
 		account: &Account{

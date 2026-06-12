@@ -207,11 +207,20 @@ func TestHandleSmartRetry_503_LongDelay_NoSingleAccountRetry_StillSwitches(t *te
 // → 单账号原地重试仅针对 503，429 依然走切换账号逻辑
 func TestHandleSmartRetry_429_LongDelay_SingleAccountRetry_StillSwitches(t *testing.T) {
 	repo := &stubAntigravityAccountRepo{}
+	futureResetAt := time.Now().Add(time.Hour).Format(time.RFC3339)
 	account := &Account{
 		ID:       3,
 		Name:     "acc-429",
 		Type:     AccountTypeOAuth,
 		Platform: PlatformAntigravity,
+		Extra: map[string]any{
+			// overages 强制开启，需积分也耗尽才走限流路径
+			modelRateLimitsKey: map[string]any{
+				creditsExhaustedKey: map[string]any{
+					"rate_limit_reset_at": futureResetAt,
+				},
+			},
+		},
 	}
 
 	// 429 + 90s >= 60s 阈值
@@ -727,6 +736,7 @@ func TestAntigravityRetryLoop_PreCheck_SingleAccountRetry_SkipsRateLimit(t *test
 // 对照组：无 SingleAccountRetry + 已限流 → 预检查返回 switchError
 func TestAntigravityRetryLoop_PreCheck_NoSingleAccountRetry_SwitchesOnRateLimit(t *testing.T) {
 	upstream := &recordingOKUpstream{}
+	futureResetAt3 := time.Now().Add(30 * time.Second).Format(time.RFC3339)
 	account := &Account{
 		ID:          21,
 		Name:        "acc-rate-limited-multi",
@@ -738,7 +748,10 @@ func TestAntigravityRetryLoop_PreCheck_NoSingleAccountRetry_SwitchesOnRateLimit(
 		Extra: map[string]any{
 			modelRateLimitsKey: map[string]any{
 				"claude-sonnet-4-5": map[string]any{
-					"rate_limit_reset_at": time.Now().Add(30 * time.Second).Format(time.RFC3339),
+					"rate_limit_reset_at": futureResetAt3,
+				},
+				creditsExhaustedKey: map[string]any{
+					"rate_limit_reset_at": futureResetAt3,
 				},
 			},
 		},

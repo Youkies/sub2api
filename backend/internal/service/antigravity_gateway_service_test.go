@@ -302,7 +302,7 @@ func TestAntigravityGatewayService_Forward_ModelRateLimitTriggersFailover(t *tes
 		httpUpstream:  &httpUpstreamStub{resp: nil, err: nil},
 	}
 
-	// 设置模型限流：剩余时间 30 秒（> antigravityRateLimitThreshold 7s）
+	// 设置模型限流 + AICredits 耗尽（overages 强制开启，需积分也耗尽才触发切换）
 	futureResetAt := time.Now().Add(30 * time.Second).Format(time.RFC3339)
 	account := &Account{
 		ID:          1,
@@ -319,12 +319,15 @@ func TestAntigravityGatewayService_Forward_ModelRateLimitTriggersFailover(t *tes
 				"claude-opus-4-6-thinking": map[string]any{
 					"rate_limit_reset_at": futureResetAt,
 				},
+				creditsExhaustedKey: map[string]any{
+					"rate_limit_reset_at": futureResetAt,
+				},
 			},
 		},
 	}
 
 	result, err := svc.Forward(context.Background(), c, account, body, false)
-	require.Nil(t, result, "Forward should not return result when model rate limited")
+	require.Nil(t, result, "Forward should not return result when model rate limited and credits exhausted")
 	require.NotNil(t, err, "Forward should return error")
 
 	// 核心验证：错误应该是 UpstreamFailoverError，而不是普通 502 错误
@@ -375,12 +378,15 @@ func TestAntigravityGatewayService_ForwardGemini_ModelRateLimitTriggersFailover(
 				"gemini-2.5-flash": map[string]any{
 					"rate_limit_reset_at": futureResetAt,
 				},
+				creditsExhaustedKey: map[string]any{
+					"rate_limit_reset_at": futureResetAt,
+				},
 			},
 		},
 	}
 
 	result, err := svc.ForwardGemini(context.Background(), c, account, "gemini-2.5-flash", "generateContent", false, body, false)
-	require.Nil(t, result, "ForwardGemini should not return result when model rate limited")
+	require.Nil(t, result, "ForwardGemini should not return result when model rate limited and credits exhausted")
 	require.NotNil(t, err, "ForwardGemini should return error")
 
 	// 核心验证：错误应该是 UpstreamFailoverError，而不是普通 502 错误
@@ -427,6 +433,9 @@ func TestAntigravityGatewayService_Forward_StickySessionForceCacheBilling(t *tes
 		Extra: map[string]any{
 			modelRateLimitsKey: map[string]any{
 				"claude-opus-4-6-thinking": map[string]any{
+					"rate_limit_reset_at": futureResetAt,
+				},
+				creditsExhaustedKey: map[string]any{
 					"rate_limit_reset_at": futureResetAt,
 				},
 			},
@@ -482,6 +491,9 @@ func TestAntigravityGatewayService_ForwardGemini_StickySessionForceCacheBilling(
 		Extra: map[string]any{
 			modelRateLimitsKey: map[string]any{
 				"gemini-2.5-flash": map[string]any{
+					"rate_limit_reset_at": futureResetAt,
+				},
+				creditsExhaustedKey: map[string]any{
 					"rate_limit_reset_at": futureResetAt,
 				},
 			},
@@ -830,6 +842,10 @@ func TestAntigravityGatewayService_ForwardGemini_SignatureRetryPropagatesFailove
 			account.Extra = map[string]any{
 				modelRateLimitsKey: map[string]any{
 					mappedModel: map[string]any{
+						"rate_limit_reset_at": futureResetAt,
+					},
+					// overages 强制开启，需积分也耗尽才触发切换
+					creditsExhaustedKey: map[string]any{
 						"rate_limit_reset_at": futureResetAt,
 					},
 				},
