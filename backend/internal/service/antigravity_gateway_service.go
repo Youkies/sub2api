@@ -226,10 +226,23 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 		}
 
 		result := s.attemptCreditsOveragesRetry(p, baseURL, modelName, waitDuration, resp.StatusCode, respBody)
-		if result.handled && result.resp != nil {
+		if result.handled {
+			if result.resp != nil {
+				// 积分重试成功
+				return &smartRetryResult{
+					action: smartRetryActionBreakWithResp,
+					resp:   result.resp,
+				}
+			}
+			// 积分重试失败（免费配额耗尽且积分也失败）→ 切换账号，不再继续用免费配额重试
+			s.clearStickySession(p.ctx, p.groupID, p.sessionHash)
 			return &smartRetryResult{
 				action: smartRetryActionBreakWithResp,
-				resp:   result.resp,
+				switchError: &AntigravityAccountSwitchError{
+					OriginalAccountID: p.account.ID,
+					RateLimitedModel:  quotaExhaustedModelKey,
+					IsStickySession:   p.isStickySession,
+				},
 			}
 		}
 	}
