@@ -50,10 +50,12 @@ const (
 	antigravityRateLimitJitterPct = 0.25
 
 	// MODEL_CAPACITY_EXHAUSTED 专用重试参数
-	// 模型容量不足时，所有账号共享同一容量池，切换账号无意义
-	// 使用固定 1s 间隔重试，最多重试 60 次
-	antigravityModelCapacityRetryMaxAttempts = 60
-	antigravityModelCapacityRetryWait        = 1 * time.Second
+	// 模型容量不足时，所有账号共享同一容量池，切换账号无意义。
+	// 对齐 CPA2：少量重试（快速探测），延迟从 250ms 线性增长到 2s，而非固定 1s × 60 次。
+	// 超出重试次数后切换账号，让调度器选其他节点。
+	antigravityModelCapacityRetryMaxAttempts = 5
+	antigravityModelCapacityRetryWait        = 250 * time.Millisecond
+	antigravityModelCapacityRetryMaxWait     = 2 * time.Second
 
 	// Google RPC 状态和类型常量
 	googleRPCStatusResourceExhausted      = "RESOURCE_EXHAUSTED"
@@ -286,11 +288,11 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 		var lastRetryResp *http.Response
 		var lastRetryBody []byte
 
-		// MODEL_CAPACITY_EXHAUSTED 使用独立的重试参数（60 次，固定 1s 间隔）
+		// MODEL_CAPACITY_EXHAUSTED 使用独立的重试参数（5 次，250ms 线性增长到 2s）
 		maxAttempts := antigravitySmartRetryMaxAttempts
 		if isModelCapacityExhausted {
 			maxAttempts = antigravityModelCapacityRetryMaxAttempts
-			waitDuration = antigravityModelCapacityRetryWait
+			waitDuration = antigravityModelCapacityRetryWait // 首次等待，后续在循环内递增
 
 			// 全局去重：如果其他 goroutine 已在重试同一模型且尚在 cooldown 中，直接返回 503
 			if modelName != "" {
@@ -368,8 +370,14 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 				_ = retryResp.Body.Close()
 			}
 
-			// 解析新的重试信息，用于下次重试的等待时间（MODEL_CAPACITY_EXHAUSTED 使用固定循环，跳过）
-			if !isModelCapacityExhausted && attempt < maxAttempts && lastRetryBody != nil {
+			// 解析新的重试信息，用于下次重试的等待时间
+			if isModelCapacityExhausted {
+				// MODEL_CAPACITY_EXHAUSTED：线性递增，250ms × (attempt+1)，上限 2s
+				waitDuration = time.Duration(attempt+1) * antigravityModelCapacityRetryWait
+				if waitDuration > antigravityModelCapacityRetryMaxWait {
+					waitDuration = antigravityModelCapacityRetryMaxWait
+				}
+			} else if attempt < maxAttempts && lastRetryBody != nil {
 				newShouldRetry, _, newWaitDuration, _, _ := shouldTriggerAntigravitySmartRetry(p.account, lastRetryBody)
 				if newShouldRetry && newWaitDuration > 0 {
 					waitDuration = newWaitDuration
@@ -387,27 +395,26 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 			retryBody = respBody
 		}
 
-		// MODEL_CAPACITY_EXHAUSTED：模型容量不足，切换账号无意义
-		// 直接返回上游错误响应，不设置模型限流，不切换账号
+		// MODEL_CAPACITY_EXHAUSTED：重试耗尽后切换账号（不同账号可能路由到不同节点）
 		if isModelCapacityExhausted {
-			// 设置 cooldown，让后续请求快速失败，避免重复重试
+			// 设置短暂 cooldown，让后续对同一账号的并发请求快速失败
 			if modelName != "" {
 				modelCapacityExhaustedMu.Lock()
 				modelCapacityExhaustedUntil[modelName] = time.Now().Add(antigravityModelCapacityCooldown)
 				modelCapacityExhaustedMu.Unlock()
 			}
-			log.Printf("%s status=%d smart_retry_exhausted_model_capacity attempts=%d model=%s account=%d body=%s (model capacity exhausted, not switching account)",
+			log.Printf("%s status=%d smart_retry_exhausted_model_capacity attempts=%d model=%s account=%d body=%s (switching account)",
 				p.prefix, resp.StatusCode, maxAttempts, modelName, p.account.ID, truncateForLog(retryBody, 200))
+			s.clearStickySession(p.ctx, p.groupID, p.sessionHash)
 			return &smartRetryResult{
 				action: smartRetryActionBreakWithResp,
-				resp: &http.Response{
-					StatusCode: resp.StatusCode,
-					Header:     resp.Header.Clone(),
-					Body:       io.NopCloser(bytes.NewReader(retryBody)),
+				switchError: &AntigravityAccountSwitchError{
+					OriginalAccountID: p.account.ID,
+					RateLimitedModel:  modelName,
+					IsStickySession:   p.isStickySession,
 				},
 			}
 		}
-
 		// 单账号 503 退避重试模式：智能重试耗尽后不设限流、不切换账号，
 		// 直接返回 503 让 Handler 层的单账号退避循环做最终处理。
 		if resp.StatusCode == http.StatusServiceUnavailable && isSingleAccountRetry(p.ctx) {

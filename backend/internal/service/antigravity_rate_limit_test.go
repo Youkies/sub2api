@@ -699,7 +699,7 @@ func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
 			expectedShouldRetry:              true,
 			expectedShouldRateLimit:          false,
 			expectedIsModelCapacityExhausted: true,
-			minWait:                          1 * time.Second,
+			minWait:                          250 * time.Millisecond,
 			modelName:                        "gemini-3-pro-high",
 		},
 		{
@@ -718,7 +718,7 @@ func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
 			expectedShouldRetry:              true,
 			expectedShouldRateLimit:          false,
 			expectedIsModelCapacityExhausted: true,
-			minWait:                          1 * time.Second,
+			minWait:                          250 * time.Millisecond,
 			modelName:                        "gemini-2.5-flash",
 		},
 		{
