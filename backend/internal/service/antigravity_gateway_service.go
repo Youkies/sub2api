@@ -211,6 +211,20 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 		isCreditsRetryCandidate &&
 		p.account.IsOveragesEnabled() &&
 		!p.account.isCreditsExhausted() {
+
+		// 写入模型冷却记录，让后续请求的预检查能命中并直接注入积分，不再白打免费配额。
+		// QuotaExhausted 通常无结构化 RetryInfo（shouldRateLimitModel=false），不会走下方的
+		// setAntigravityModelRateLimits 路径，需要在此补写。
+		quotaExhaustedCooldown := antigravityJitterDuration(antigravityDefaultRateLimitDuration, antigravityRateLimitJitterPct)
+		quotaExhaustedModelKey := resolveFinalAntigravityModelKey(p.ctx, p.account, p.requestedModel)
+		if quotaExhaustedModelKey == "" {
+			quotaExhaustedModelKey = resolveAntigravityModelKey(p.requestedModel)
+		}
+		if quotaExhaustedModelKey != "" {
+			s.setAntigravityModelRateLimits(p.ctx, p.accountRepo, p.account, quotaExhaustedModelKey, p.prefix, resp.StatusCode,
+				time.Now().Add(quotaExhaustedCooldown), false)
+		}
+
 		result := s.attemptCreditsOveragesRetry(p, baseURL, modelName, waitDuration, resp.StatusCode, respBody)
 		if result.handled && result.resp != nil {
 			return &smartRetryResult{

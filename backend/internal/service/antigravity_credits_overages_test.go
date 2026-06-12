@@ -143,7 +143,8 @@ func TestHandleSmartRetry_QuotaExhausted_UsesCreditsAndStoresIndependentState(t 
 	require.Nil(t, result.switchError)
 	require.Len(t, upstream.requestBodies, 1)
 	require.Contains(t, string(upstream.requestBodies[0]), "enabledCreditTypes")
-	require.Empty(t, repo.modelRateLimitCalls, "overages 成功后不应写入普通 model_rate_limits")
+	// 配额耗尽时应写入冷却记录，让后续请求的预检查能命中并直接注入积分，避免再次白打免费配额
+	require.NotEmpty(t, repo.modelRateLimitCalls, "overages 触发后应写入 model_rate_limits 供预检查命中")
 }
 
 func TestHandleSmartRetry_RateLimited_DoesNotUseCredits(t *testing.T) {
