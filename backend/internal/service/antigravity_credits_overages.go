@@ -265,6 +265,7 @@ func (s *AntigravityGatewayService) attemptCreditsOveragesRetry(
 		return &creditsOveragesRetryResult{handled: true, resp: creditsResp}
 	}
 
+
 	s.handleCreditsRetryFailure(p.ctx, p.prefix, modelKey, p.account, creditsResp, err)
 	return &creditsOveragesRetryResult{handled: true}
 }
